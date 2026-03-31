@@ -1,6 +1,6 @@
 {
   "name": "clawsouls-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ClawSouls MCP Server — SoulScan, Soul Rollback, Swarm Memory for AI agents",
   "main": "src/index.js",
   "bin": {
@@ -23,6 +23,7 @@
     "url": "https://github.com/clawsouls/clawsouls-mcp"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "zod": "^3.23.0"
   }
 }
