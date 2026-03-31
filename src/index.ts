@@ -5,15 +5,53 @@ import { z } from "zod";
 
 const API_BASE = "https://clawsouls.ai/api/v1";
 
-// --- API helpers ---
-async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
-  return res.json();
+// --- Types ---
+interface Soul {
+  displayName: string;
+  owner: string;
+  name: string;
+  description: string;
+  downloads: number;
+  avgRating?: number;
+  version?: string;
+  category?: string;
+  scanScore?: number;
+  scanGrade?: string;
 }
 
-async function apiPost(path, body, apiKey) {
-  const headers = { "Content-Type": "application/json" };
+interface ScanResult {
+  grade: string;
+  score: number;
+  passed: number;
+  total: number;
+  failures?: Array<{
+    rule: string;
+    severity: string;
+    message: string;
+    suggestion?: string;
+  }>;
+  recommendations?: string[];
+}
+
+interface Drift {
+  file: string;
+  severity: string;
+  addedLines?: number;
+  removedLines?: number;
+  changeRatio?: string;
+  removedCritical?: string[];
+  description?: string;
+}
+
+// --- API helpers ---
+async function apiGet<T = unknown>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
+
+async function apiPost<T = unknown>(path: string, body: unknown, apiKey?: string): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-API-Key"] = apiKey;
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -21,11 +59,11 @@ async function apiPost(path, body, apiKey) {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
-  return res.json();
+  return res.json() as Promise<T>;
 }
 
 // --- Soul Spec file conversion ---
-const SECTION_MAP = {
+const SECTION_MAP: Record<string, string> = {
   "SOUL.md": "Persona",
   "IDENTITY.md": "Identity",
   "STYLE.md": "Communication Style",
@@ -33,9 +71,9 @@ const SECTION_MAP = {
   "HEARTBEAT.md": "Periodic Checks",
 };
 
-function filesToClaudeMd(files, meta) {
-  const sections = [];
-  const name = meta.displayName || meta.name || "AI Agent";
+function filesToClaudeMd(files: Record<string, string>, meta: Record<string, unknown>): string {
+  const sections: string[] = [];
+  const name = (meta.displayName || meta.name || "AI Agent") as string;
   const ver = meta.version ? ` v${meta.version}` : "";
   sections.push(`# ${name}${ver}`);
   if (meta.description) sections.push(`> ${meta.description}`);
@@ -52,7 +90,7 @@ function filesToClaudeMd(files, meta) {
 // --- Server setup ---
 const server = new McpServer({
   name: "clawsouls-mcp",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 // Tool: soul_search
@@ -70,16 +108,16 @@ server.tool(
     if (query) params.set("q", query);
     if (category) params.set("category", category);
     if (limit) params.set("limit", String(limit));
-    const data = await apiGet(`/souls?${params.toString()}`);
+    const data = await apiGet<{ souls: Soul[] }>(`/souls?${params.toString()}`);
     if (!data.souls?.length)
-      return { content: [{ type: "text", text: "No souls found." }] };
+      return { content: [{ type: "text" as const, text: "No souls found." }] };
     const lines = data.souls.map(
       (s, i) =>
         `${i + 1}. **${s.displayName}** (\`${s.owner}/${s.name}\`)\n   ${s.description}\n   ⬇️ ${s.downloads} | ⭐ ${s.avgRating?.toFixed(1) || "N/A"}`
     );
     return {
       content: [
-        { type: "text", text: `Found ${data.souls.length} persona(s):\n\n${lines.join("\n\n")}` },
+        { type: "text" as const, text: `Found ${data.souls.length} persona(s):\n\n${lines.join("\n\n")}` },
       ],
     };
   }
@@ -95,7 +133,7 @@ server.tool(
   },
   { title: "Get Persona Details", readOnlyHint: true },
   async ({ owner, name }) => {
-    const s = await apiGet(`/souls/${owner}/${name}`);
+    const s = await apiGet<Soul>(`/souls/${owner}/${name}`);
     const text = [
       `# ${s.displayName} (${owner}/${name})`,
       `> ${s.description}`,
@@ -106,7 +144,7 @@ server.tool(
       `- **Rating**: ${s.avgRating?.toFixed(1) || "N/A"}`,
       s.scanScore != null ? `- **SoulScan**: ${s.scanScore}/100 (${s.scanGrade})` : "",
     ].filter(Boolean).join("\n");
-    return { content: [{ type: "text", text }] };
+    return { content: [{ type: "text" as const, text }] };
   }
 );
 
@@ -121,12 +159,14 @@ server.tool(
   },
   { title: "Install Persona", readOnlyHint: false },
   async ({ owner, name, output_dir }) => {
-    const bundle = await apiGet(`/bundle/${owner}/${name}`);
+    const bundle = await apiGet<{ files: Record<string, string>; manifest: Record<string, unknown> }>(
+      `/bundle/${owner}/${name}`
+    );
     if (!bundle.files || Object.keys(bundle.files).length === 0)
-      return { content: [{ type: "text", text: `No files found for "${owner}/${name}".` }] };
+      return { content: [{ type: "text" as const, text: `No files found for "${owner}/${name}".` }] };
     const claudeMd = filesToClaudeMd(bundle.files, bundle.manifest);
     const m = bundle.manifest;
-    let writtenPath = null;
+    let writtenPath: string | null = null;
     try {
       const { writeFileSync, mkdirSync, existsSync } = await import("fs");
       const { resolve } = await import("path");
@@ -135,18 +175,20 @@ server.tool(
       if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
       writtenPath = resolve(`${dir}/CLAUDE.md`);
       writeFileSync(writtenPath, claudeMd, "utf-8");
-    } catch { writtenPath = null; }
+    } catch {
+      writtenPath = null;
+    }
     if (writtenPath) {
       return {
         content: [{
-          type: "text",
+          type: "text" as const,
           text: `✅ **${m.displayName}** (${owner}/${name} v${m.version}) installed.\nCLAUDE.md written to: \`${writtenPath}\``,
         }],
       };
     }
     return {
       content: [{
-        type: "text",
+        type: "text" as const,
         text: `✅ Downloaded **${m.displayName}**. Save as CLAUDE.md:\n\n\`\`\`markdown\n${claudeMd}\`\`\``,
       }],
     };
@@ -171,8 +213,8 @@ server.tool(
   { title: "SoulScan Safety Verification", readOnlyHint: true },
   async ({ files, api_key }) => {
     try {
-      const result = await apiPost("/soulscan/scan", { files }, api_key);
-      const lines = [
+      const result = await apiPost<ScanResult>("/soulscan/scan", { files }, api_key);
+      const lines: string[] = [
         `# SoulScan Results`,
         "",
         `**Grade**: ${result.grade} (${result.score}/100)`,
@@ -198,17 +240,17 @@ server.tool(
         }
       }
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
-    } catch (error) {
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch {
       // Fallback: local basic analysis
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: [
               "⚠️ Could not reach SoulScan API. Running basic local analysis.\n",
               ...Object.entries(files).map(([name, content]) => {
-                const issues = [];
+                const issues: string[] = [];
                 if (!content || content.trim().length < 50)
                   issues.push(`${name}: Content too short (< 50 chars)`);
                 if (name === "SOUL.md" && !content.includes("#"))
@@ -242,7 +284,7 @@ server.tool(
   },
   { title: "Soul Rollback — Drift Detection", readOnlyHint: true },
   async ({ current_files, original_files }) => {
-    const drifts = [];
+    const drifts: Drift[] = [];
 
     for (const [filename, original] of Object.entries(original_files)) {
       const current = current_files[filename];
@@ -256,7 +298,6 @@ server.tool(
       }
       if (current === original) continue;
 
-      // Calculate simple diff metrics
       const origLines = original.split("\n");
       const currLines = current.split("\n");
       const addedLines = currLines.filter((l) => !origLines.includes(l)).length;
@@ -267,7 +308,6 @@ server.tool(
       if (changeRatio > 0.5) severity = "high";
       else if (changeRatio > 0.2) severity = "medium";
 
-      // Check for critical changes
       const criticalPatterns = [
         /safety/i, /boundary/i, /never/i, /forbidden/i, /prohibited/i,
         /must not/i, /do not/i, /restrict/i, /permission/i,
@@ -287,7 +327,6 @@ server.tool(
       });
     }
 
-    // Check for new files
     for (const filename of Object.keys(current_files)) {
       if (!original_files[filename]) {
         drifts.push({
@@ -302,7 +341,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: "✅ **No drift detected.** All persona files match their baseline.",
           },
         ],
@@ -315,8 +354,8 @@ server.tool(
         ? "medium"
         : "low";
 
-    const severityEmoji = { high: "🔴", medium: "🟡", low: "🔵" };
-    const lines = [
+    const severityEmoji: Record<string, string> = { high: "🔴", medium: "🟡", low: "🔵" };
+    const lines: string[] = [
       `# Soul Rollback — Drift Report`,
       "",
       `**Overall severity**: ${severityEmoji[maxSeverity]} ${maxSeverity.toUpperCase()}`,
@@ -347,7 +386,7 @@ server.tool(
       lines.push("High-severity drift detected. Consider running `git checkout` on affected persona files to restore the baseline.");
     }
 
-    return { content: [{ type: "text", text: lines.join("\n") }] };
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 
@@ -369,11 +408,10 @@ server.tool(
       const { resolve, join } = await import("path");
 
       const dir = resolve(memory_dir || "./memory");
-      const results = [];
+      const results: Array<{ file: string; line: number; snippet: string }> = [];
       const queryLower = query.toLowerCase();
       const queryTerms = queryLower.split(/\s+/);
 
-      // Search MEMORY.md
       const memoryMd = resolve("./MEMORY.md");
       if (existsSync(memoryMd)) {
         const content = readFileSync(memoryMd, "utf-8");
@@ -391,7 +429,6 @@ server.tool(
         }
       }
 
-      // Search memory/*.md
       if (existsSync(dir)) {
         for (const file of readdirSync(dir)) {
           if (!file.endsWith(".md")) continue;
@@ -413,11 +450,10 @@ server.tool(
 
       if (results.length === 0) {
         return {
-          content: [{ type: "text", text: `No results found for "${query}".` }],
+          content: [{ type: "text" as const, text: `No results found for "${query}".` }],
         };
       }
 
-      // Deduplicate and limit
       const unique = results.slice(0, 20);
       const text = unique
         .map((r) => `### ${r.file}:${r.line}\n\`\`\`\n${r.snippet}\n\`\`\``)
@@ -426,7 +462,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `Found ${unique.length} result(s) for "${query}":\n\n${text}`,
           },
         ],
@@ -434,7 +470,7 @@ server.tool(
     } catch (error) {
       return {
         content: [
-          { type: "text", text: `Error searching memory: ${error.message}` },
+          { type: "text" as const, text: `Error searching memory: ${(error as Error).message}` },
         ],
       };
     }
@@ -454,14 +490,13 @@ server.tool(
   { title: "Swarm Memory Status", readOnlyHint: true },
   async ({ memory_dir }) => {
     try {
-      const { readdirSync, statSync, readFileSync, existsSync } = await import("fs");
+      const { readdirSync, statSync, existsSync } = await import("fs");
       const { resolve, join } = await import("path");
       const { execSync } = await import("child_process");
 
       const dir = resolve(memory_dir || "./memory");
-      const files = [];
+      const files: Array<{ name: string; size: number; modified: string }> = [];
 
-      // Check MEMORY.md
       const memoryMd = resolve("./MEMORY.md");
       if (existsSync(memoryMd)) {
         const stat = statSync(memoryMd);
@@ -472,7 +507,6 @@ server.tool(
         });
       }
 
-      // Check memory dir
       if (existsSync(dir)) {
         for (const file of readdirSync(dir).sort()) {
           if (!file.endsWith(".md")) continue;
@@ -485,7 +519,6 @@ server.tool(
         }
       }
 
-      // Git status
       let gitStatus = "unknown";
       try {
         const status = execSync("git status --porcelain MEMORY.md memory/", {
@@ -497,7 +530,7 @@ server.tool(
         gitStatus = "not a git repository";
       }
 
-      const lines = [
+      const lines: string[] = [
         "# Swarm Memory Status",
         "",
         `**Total files**: ${files.length}`,
@@ -517,11 +550,11 @@ server.tool(
         "```",
       ];
 
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (error) {
       return {
         content: [
-          { type: "text", text: `Error reading memory status: ${error.message}` },
+          { type: "text" as const, text: `Error reading memory status: ${(error as Error).message}` },
         ],
       };
     }
@@ -529,12 +562,12 @@ server.tool(
 );
 
 // --- Start server ---
-async function main() {
+async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   console.error("Fatal error:", error);
   process.exit(1);
 });
