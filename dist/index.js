@@ -51,7 +51,7 @@ function filesToClaudeMd(files, meta) {
 // --- Server setup ---
 const server = new McpServer({
     name: "clawsouls-mcp",
-    version: "0.3.0",
+    version: "0.3.1",
 });
 // Tool: soul_search
 server.tool("soul_search", "Search AI agent personas on ClawSouls by keyword, category, or tag", {
@@ -446,6 +446,240 @@ server.tool("memory_status", "Show current status of agent memory files — list
             content: [
                 { type: "text", text: `Error reading memory status: ${error.message}` },
             ],
+        };
+    }
+});
+// Tool: memory_sync
+server.tool("memory_sync", "Sync agent memory files with a remote Git repository for multi-agent Swarm Memory. Supports init (setup), push (upload changes), pull (download changes), and status.", {
+    action: z.enum(["init", "push", "pull", "status"]).describe("init: initialize memory repo & connect remote; push: commit & push local changes; pull: fetch & merge remote changes; status: show sync status"),
+    repo_url: z
+        .string()
+        .optional()
+        .describe("Remote Git repo URL (required for init, e.g. git@github.com:user/agent-memory.git)"),
+    memory_dir: z
+        .string()
+        .optional()
+        .describe("Path to memory directory (default: ./memory)"),
+    agent_name: z
+        .string()
+        .optional()
+        .describe("Agent name for commit messages (default: 'agent')"),
+    message: z
+        .string()
+        .optional()
+        .describe("Custom commit message (for push)"),
+}, { title: "Swarm Memory Sync", readOnlyHint: false }, async ({ action, repo_url, memory_dir, agent_name, message }) => {
+    const { execSync } = await import("child_process");
+    const { existsSync, mkdirSync, writeFileSync } = await import("fs");
+    const { resolve } = await import("path");
+    const dir = resolve(memory_dir || "./memory");
+    const name = agent_name || "agent";
+    function git(cmd, cwd) {
+        try {
+            return execSync(`git ${cmd}`, {
+                encoding: "utf-8",
+                timeout: 30000,
+                cwd: cwd || dir,
+            }).trim();
+        }
+        catch (e) {
+            throw new Error(`git ${cmd} failed: ${e.message}`);
+        }
+    }
+    try {
+        if (action === "init") {
+            if (!repo_url) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: "❌ `repo_url` is required for init. Example:\n`git@github.com:yourname/agent-memory.git`",
+                        }],
+                };
+            }
+            // Create memory dir if needed
+            if (!existsSync(dir))
+                mkdirSync(dir, { recursive: true });
+            // Check if already a git repo
+            const isGit = existsSync(resolve(dir, ".git"));
+            if (!isGit) {
+                git("init", dir);
+                git(`remote add origin ${repo_url}`, dir);
+                // Create initial README
+                writeFileSync(resolve(dir, "README.md"), `# Swarm Memory\n\nShared agent memory repository managed by [ClawSouls](https://clawsouls.ai).\n\n> Do not edit files manually — they are managed by AI agents.\n`, "utf-8");
+                // Create .gitignore
+                writeFileSync(resolve(dir, ".gitignore"), `*.tmp\n*.lock\n.DS_Store\n`, "utf-8");
+                git("add -A", dir);
+                git(`commit -m "🧠 Swarm Memory initialized by ${name}"`, dir);
+                // Try to push (may fail if remote is empty)
+                try {
+                    git("push -u origin main", dir);
+                }
+                catch {
+                    try {
+                        git("branch -M main", dir);
+                        git("push -u origin main", dir);
+                    }
+                    catch (pushErr) {
+                        return {
+                            content: [{
+                                    type: "text",
+                                    text: `✅ Local repo initialized at \`${dir}\`\nRemote: \`${repo_url}\`\n\n⚠️ Could not push — make sure the remote repo exists and you have access.\nError: ${pushErr.message}`,
+                                }],
+                        };
+                    }
+                }
+                return {
+                    content: [{
+                            type: "text",
+                            text: `✅ **Swarm Memory initialized!**\n\n- Local: \`${dir}\`\n- Remote: \`${repo_url}\`\n- Branch: \`main\`\n- Initial commit pushed ✅\n\nOther agents can now \`memory_sync pull\` from the same repo.`,
+                        }],
+                };
+            }
+            // Already a git repo — just add/update remote
+            try {
+                git(`remote set-url origin ${repo_url}`, dir);
+            }
+            catch {
+                git(`remote add origin ${repo_url}`, dir);
+            }
+            return {
+                content: [{
+                        type: "text",
+                        text: `✅ Remote updated to \`${repo_url}\` for existing repo at \`${dir}\``,
+                    }],
+            };
+        }
+        if (action === "push") {
+            if (!existsSync(resolve(dir, ".git"))) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: "❌ Not a git repo. Run `memory_sync init` first.",
+                        }],
+                };
+            }
+            // Stage all memory files
+            git("add -A", dir);
+            // Check if there are changes
+            const status = git("status --porcelain", dir);
+            if (!status) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: "✅ Nothing to push — memory is already in sync.",
+                        }],
+                };
+            }
+            const commitMsg = message || `🧠 Memory sync by ${name} — ${new Date().toISOString().split("T")[0]}`;
+            git(`commit -m "${commitMsg}"`, dir);
+            git("push", dir);
+            const changedFiles = status.split("\n").length;
+            return {
+                content: [{
+                        type: "text",
+                        text: `✅ **Pushed ${changedFiles} change(s)**\n\n\`\`\`\n${status}\n\`\`\`\n\nCommit: ${commitMsg}`,
+                    }],
+            };
+        }
+        if (action === "pull") {
+            if (!existsSync(resolve(dir, ".git"))) {
+                // Clone if repo_url provided
+                if (repo_url) {
+                    git(`clone ${repo_url} ${dir}`, resolve(dir, ".."));
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `✅ **Cloned Swarm Memory** from \`${repo_url}\`\n\nLocal: \`${dir}\``,
+                            }],
+                    };
+                }
+                return {
+                    content: [{
+                            type: "text",
+                            text: "❌ Not a git repo. Run `memory_sync init` with `repo_url` first.",
+                        }],
+                };
+            }
+            const before = git("rev-parse HEAD", dir);
+            git("pull --rebase", dir);
+            const after = git("rev-parse HEAD", dir);
+            if (before === after) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: "✅ Already up to date — no new changes from remote.",
+                        }],
+                };
+            }
+            const log = git(`log --oneline ${before}..${after}`, dir);
+            return {
+                content: [{
+                        type: "text",
+                        text: `✅ **Pulled new changes:**\n\n\`\`\`\n${log}\n\`\`\``,
+                    }],
+            };
+        }
+        if (action === "status") {
+            if (!existsSync(resolve(dir, ".git"))) {
+                return {
+                    content: [{
+                            type: "text",
+                            text: `❌ \`${dir}\` is not a Swarm Memory repo. Run \`memory_sync init\` first.`,
+                        }],
+                };
+            }
+            let remote = "none";
+            try {
+                remote = git("remote get-url origin", dir);
+            }
+            catch { /* no remote */ }
+            const branch = git("branch --show-current", dir);
+            const status = git("status --porcelain", dir) || "(clean)";
+            const lastCommit = git("log -1 --format=%h\\ %s\\ (%cr)", dir);
+            // Check if ahead/behind
+            let syncStatus = "unknown";
+            try {
+                git("fetch --dry-run", dir);
+                const ahead = git("rev-list --count origin/main..HEAD", dir);
+                const behind = git("rev-list --count HEAD..origin/main", dir);
+                syncStatus = `↑ ${ahead} ahead, ↓ ${behind} behind`;
+            }
+            catch {
+                syncStatus = "could not reach remote";
+            }
+            return {
+                content: [{
+                        type: "text",
+                        text: [
+                            "# Swarm Memory Sync Status",
+                            "",
+                            `- **Local**: \`${dir}\``,
+                            `- **Remote**: \`${remote}\``,
+                            `- **Branch**: \`${branch}\``,
+                            `- **Last commit**: ${lastCommit}`,
+                            `- **Sync**: ${syncStatus}`,
+                            "",
+                            "## Local Changes",
+                            "```",
+                            status,
+                            "```",
+                        ].join("\n"),
+                    }],
+            };
+        }
+        return {
+            content: [{
+                    type: "text",
+                    text: `❌ Unknown action: ${action}. Use: init, push, pull, or status.`,
+                }],
+        };
+    }
+    catch (error) {
+        return {
+            content: [{
+                    type: "text",
+                    text: `❌ Swarm Memory sync error: ${error.message}`,
+                }],
         };
     }
 });
