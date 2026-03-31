@@ -1,0 +1,28 @@
+{
+  "name": "clawsouls-mcp",
+  "version": "0.1.0",
+  "description": "ClawSouls MCP Server — SoulScan, Soul Rollback, Swarm Memory for AI agents",
+  "main": "src/index.js",
+  "bin": {
+    "clawsouls-mcp": "src/index.js"
+  },
+  "type": "module",
+  "keywords": [
+    "mcp",
+    "soulscan",
+    "soul-rollback",
+    "swarm-memory",
+    "ai-safety",
+    "persona",
+    "clawsouls"
+  ],
+  "author": "ClawSouls <hello@clawsouls.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clawsouls/clawsouls-mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
