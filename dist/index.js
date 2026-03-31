@@ -3,6 +3,155 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 const API_BASE = "https://clawsouls.ai/api/v1";
+function tokenize(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^\w\s가-힣ㄱ-ㅎㅏ-ㅣ\-_.]/g, " ")
+        .split(/\s+/)
+        .filter((t) => t.length > 1);
+}
+function buildCorpus(files) {
+    const docs = [];
+    for (const [file, content] of Object.entries(files)) {
+        const lines = content.split("\n");
+        let currentSection = "(top)";
+        let sectionStart = 0;
+        let sectionLines = [];
+        const flushSection = () => {
+            if (sectionLines.length === 0)
+                return;
+            const text = sectionLines.join("\n");
+            docs.push({
+                file,
+                section: currentSection,
+                line: sectionStart + 1,
+                text,
+                tokens: tokenize(text),
+            });
+        };
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (/^#{1,3}\s/.test(line)) {
+                flushSection();
+                currentSection = line.replace(/^#+\s*/, "").trim();
+                sectionStart = i;
+                sectionLines = [line];
+            }
+            else {
+                sectionLines.push(line);
+            }
+        }
+        flushSection();
+    }
+    return docs;
+}
+function tfidfSearch(query, docs, limit = 20) {
+    const queryTokens = tokenize(query);
+    if (queryTokens.length === 0)
+        return [];
+    // Build IDF: log(N / df)
+    const N = docs.length;
+    const df = {};
+    for (const doc of docs) {
+        const unique = new Set(doc.tokens);
+        for (const token of unique) {
+            df[token] = (df[token] || 0) + 1;
+        }
+    }
+    const idf = {};
+    for (const token of queryTokens) {
+        idf[token] = Math.log((N + 1) / ((df[token] || 0) + 1)) + 1; // smoothed IDF
+    }
+    // Score each document: sum of TF * IDF for query terms
+    const scored = [];
+    for (const doc of docs) {
+        if (doc.tokens.length === 0)
+            continue;
+        // Term frequency
+        const tf = {};
+        for (const token of doc.tokens) {
+            tf[token] = (tf[token] || 0) + 1;
+        }
+        let score = 0;
+        let matchedTerms = 0;
+        for (const qt of queryTokens) {
+            if (tf[qt]) {
+                // BM25-like TF saturation: tf / (tf + 1.2)
+                const tfNorm = tf[qt] / (tf[qt] + 1.2);
+                score += tfNorm * (idf[qt] || 1);
+                matchedTerms++;
+            }
+        }
+        // Boost for matching more query terms
+        if (matchedTerms > 0) {
+            score *= (matchedTerms / queryTokens.length);
+        }
+        // Boost recent files (daily logs)
+        const dateMatch = doc.file.match(/(\d{4}-\d{2}-\d{2})/);
+        if (dateMatch) {
+            const daysDiff = (Date.now() - new Date(dateMatch[1]).getTime()) / 86400000;
+            if (daysDiff < 7)
+                score *= 1.3;
+            else if (daysDiff < 30)
+                score *= 1.1;
+        }
+        if (score > 0) {
+            // Trim snippet to relevant portion
+            const lines = doc.text.split("\n");
+            const relevantLines = [];
+            for (let i = 0; i < lines.length; i++) {
+                if (queryTokens.some((qt) => lines[i].toLowerCase().includes(qt))) {
+                    relevantLines.push(i);
+                }
+            }
+            let snippet;
+            if (relevantLines.length > 0) {
+                const center = relevantLines[0];
+                const start = Math.max(0, center - 1);
+                const end = Math.min(lines.length, center + 4);
+                snippet = lines.slice(start, end).join("\n");
+            }
+            else {
+                snippet = lines.slice(0, 5).join("\n");
+            }
+            scored.push({
+                file: doc.file,
+                section: doc.section,
+                line: doc.line + (relevantLines[0] || 0),
+                snippet,
+                score,
+            });
+        }
+    }
+    return scored
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+}
+async function loadMemoryFiles(memoryDir) {
+    const { readdirSync, readFileSync, existsSync } = await import("fs");
+    const { resolve, join } = await import("path");
+    const files = {};
+    const dir = resolve(memoryDir);
+    // MEMORY.md in parent
+    const memoryMd = resolve(dir, "..", "MEMORY.md");
+    if (existsSync(memoryMd)) {
+        files["MEMORY.md"] = readFileSync(memoryMd, "utf-8");
+    }
+    // Also check CWD for MEMORY.md
+    const cwdMemory = resolve("./MEMORY.md");
+    if (existsSync(cwdMemory) && !files["MEMORY.md"]) {
+        files["MEMORY.md"] = readFileSync(cwdMemory, "utf-8");
+    }
+    // memory/*.md
+    if (existsSync(dir)) {
+        for (const file of readdirSync(dir)) {
+            if (!file.endsWith(".md"))
+                continue;
+            files[`memory/${file}`] = readFileSync(join(dir, file), "utf-8");
+        }
+    }
+    return files;
+}
 // --- API helpers ---
 async function apiGet(path) {
     const res = await fetch(`${API_BASE}${path}`);
@@ -51,7 +200,7 @@ function filesToClaudeMd(files, meta) {
 // --- Server setup ---
 const server = new McpServer({
     name: "clawsouls-mcp",
-    version: "0.3.1",
+    version: "0.4.0",
 });
 // Tool: soul_search
 server.tool("soul_search", "Search AI agent personas on ClawSouls by keyword, category, or tag", {
@@ -301,78 +450,137 @@ server.tool("soul_rollback_check", "Detect persona drift by comparing current So
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
 });
-// Tool: memory_search
-server.tool("memory_search", "Search across agent memory files (MEMORY.md, memory/*.md) for relevant context. Returns matching snippets with file paths.", {
-    query: z.string().describe("Search query"),
+// Tool: memory_search (TF-IDF powered)
+server.tool("memory_search", "Search agent memory using TF-IDF ranking. Returns a compact index of matching sections with relevance scores. Use memory_detail to fetch full content of interesting results. Searches MEMORY.md + memory/*.md files.", {
+    query: z.string().describe("Natural language search query (e.g. 'SDK version fix', '상표 출원')"),
     memory_dir: z
         .string()
         .optional()
         .describe("Path to memory directory (default: ./memory)"),
-}, { title: "Swarm Memory Search", readOnlyHint: true }, async ({ query, memory_dir }) => {
+    limit: z.number().optional().default(10).describe("Max results (default: 10)"),
+    enhanced: z.boolean().optional().default(false).describe("If true, includes full snippets for top results (uses more tokens). Default: compact index only."),
+}, { title: "Swarm Memory Search (TF-IDF)", readOnlyHint: true }, async ({ query, memory_dir, limit, enhanced }) => {
     try {
-        const { readdirSync, readFileSync, existsSync } = await import("fs");
-        const { resolve, join } = await import("path");
-        const dir = resolve(memory_dir || "./memory");
-        const results = [];
-        const queryLower = query.toLowerCase();
-        const queryTerms = queryLower.split(/\s+/);
-        const memoryMd = resolve("./MEMORY.md");
-        if (existsSync(memoryMd)) {
-            const content = readFileSync(memoryMd, "utf-8");
-            const lines = content.split("\n");
-            for (let i = 0; i < lines.length; i++) {
-                if (queryTerms.some((t) => lines[i].toLowerCase().includes(t))) {
-                    const start = Math.max(0, i - 1);
-                    const end = Math.min(lines.length, i + 3);
-                    results.push({
-                        file: "MEMORY.md",
-                        line: i + 1,
-                        snippet: lines.slice(start, end).join("\n"),
-                    });
-                }
-            }
+        const files = await loadMemoryFiles(memory_dir || "./memory");
+        if (Object.keys(files).length === 0) {
+            return {
+                content: [{
+                        type: "text",
+                        text: "⚠️ No memory files found. Create MEMORY.md or memory/*.md files first.",
+                    }],
+            };
         }
-        if (existsSync(dir)) {
-            for (const file of readdirSync(dir)) {
-                if (!file.endsWith(".md"))
-                    continue;
-                const content = readFileSync(join(dir, file), "utf-8");
-                const lines = content.split("\n");
-                for (let i = 0; i < lines.length; i++) {
-                    if (queryTerms.some((t) => lines[i].toLowerCase().includes(t))) {
-                        const start = Math.max(0, i - 1);
-                        const end = Math.min(lines.length, i + 3);
-                        results.push({
-                            file: `memory/${file}`,
-                            line: i + 1,
-                            snippet: lines.slice(start, end).join("\n"),
-                        });
-                    }
-                }
-            }
-        }
+        const corpus = buildCorpus(files);
+        const results = tfidfSearch(query, corpus, limit);
         if (results.length === 0) {
             return {
                 content: [{ type: "text", text: `No results found for "${query}".` }],
             };
         }
-        const unique = results.slice(0, 20);
-        const text = unique
-            .map((r) => `### ${r.file}:${r.line}\n\`\`\`\n${r.snippet}\n\`\`\``)
-            .join("\n\n");
+        if (enhanced) {
+            // Full snippets mode — more tokens but more context
+            const text = results
+                .map((r, i) => {
+                const scoreBar = "█".repeat(Math.round(r.score * 5));
+                return `### ${i + 1}. ${r.file} — ${r.section} (line ${r.line})\n**Score**: ${r.score.toFixed(3)} ${scoreBar}\n\`\`\`\n${r.snippet}\n\`\`\``;
+            })
+                .join("\n\n");
+            return {
+                content: [{
+                        type: "text",
+                        text: `# Memory Search: "${query}"\n**${results.length} results** (TF-IDF + BM25 ranking, enhanced mode)\n\n${text}`,
+                    }],
+            };
+        }
+        // Compact index mode — token efficient (~50 tokens/result)
+        const rows = results.map((r, i) => `| ${i + 1} | ${r.file}:${r.line} | ${r.section.slice(0, 40)} | ${r.score.toFixed(2)} |`);
         return {
-            content: [
-                {
+            content: [{
                     type: "text",
-                    text: `Found ${unique.length} result(s) for "${query}":\n\n${text}`,
-                },
-            ],
+                    text: [
+                        `# Memory Search: "${query}"`,
+                        `**${results.length} results** (TF-IDF + BM25 ranking)`,
+                        "",
+                        "| # | Location | Section | Score |",
+                        "|---|----------|---------|-------|",
+                        ...rows,
+                        "",
+                        "→ Use `memory_detail` with file + line to fetch full content.",
+                    ].join("\n"),
+                }],
         };
     }
     catch (error) {
         return {
             content: [
                 { type: "text", text: `Error searching memory: ${error.message}` },
+            ],
+        };
+    }
+});
+// Tool: memory_detail (3-layer step 2)
+server.tool("memory_detail", "Fetch full content of a specific memory section. Use after memory_search to get details for high-scoring results.", {
+    file: z.string().describe("File path from search results (e.g. 'memory/2026-03-31.md' or 'MEMORY.md')"),
+    line: z.number().optional().describe("Start line number (from search results)"),
+    lines: z.number().optional().default(30).describe("Number of lines to return (default: 30)"),
+    memory_dir: z
+        .string()
+        .optional()
+        .describe("Path to memory directory (default: ./memory)"),
+}, { title: "Memory Detail", readOnlyHint: true }, async ({ file, line, lines: lineCount, memory_dir }) => {
+    try {
+        const { readFileSync, existsSync } = await import("fs");
+        const { resolve } = await import("path");
+        const dir = resolve(memory_dir || ".");
+        let filePath;
+        if (file === "MEMORY.md") {
+            // Try memory_dir parent, then CWD
+            const parentPath = resolve(memory_dir || ".", "..", "MEMORY.md");
+            const cwdPath = resolve("./MEMORY.md");
+            if (existsSync(parentPath))
+                filePath = parentPath;
+            else if (existsSync(cwdPath))
+                filePath = cwdPath;
+            else
+                return { content: [{ type: "text", text: `❌ MEMORY.md not found.` }] };
+        }
+        else {
+            filePath = resolve(dir, "..", file);
+            if (!existsSync(filePath)) {
+                filePath = resolve(".", file);
+            }
+        }
+        if (!existsSync(filePath)) {
+            return {
+                content: [{ type: "text", text: `❌ File not found: ${file}` }],
+            };
+        }
+        const content = readFileSync(filePath, "utf-8");
+        const allLines = content.split("\n");
+        const startLine = Math.max(0, (line || 1) - 1);
+        const endLine = Math.min(allLines.length, startLine + (lineCount || 30));
+        const excerpt = allLines.slice(startLine, endLine).join("\n");
+        return {
+            content: [{
+                    type: "text",
+                    text: [
+                        `# ${file} (lines ${startLine + 1}–${endLine})`,
+                        "",
+                        "```markdown",
+                        excerpt,
+                        "```",
+                        "",
+                        endLine < allLines.length
+                            ? `_${allLines.length - endLine} more lines. Use \`line: ${endLine + 1}\` to continue._`
+                            : "_End of file._",
+                    ].join("\n"),
+                }],
+        };
+    }
+    catch (error) {
+        return {
+            content: [
+                { type: "text", text: `Error reading memory: ${error.message}` },
             ],
         };
     }
