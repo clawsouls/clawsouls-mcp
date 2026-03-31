@@ -1,6 +1,6 @@
 {
   "name": "clawsouls-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ClawSouls MCP Server — SoulScan, Soul Rollback, Swarm Memory for AI agents",
   "main": "src/index.js",
   "bin": {
