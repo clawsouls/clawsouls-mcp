@@ -26,6 +26,38 @@ Or add directly to your `.mcp.json`:
 }
 ```
 
+## Use with OpenClaw
+
+OpenClaw consumes MCP servers through [mcporter](https://mcporter.dev). Call ClawSouls tools ad-hoc over stdio:
+
+```bash
+mcporter call --stdio "npx -y clawsouls-mcp@latest" soul_search query="chief of staff"
+mcporter list --stdio "npx -y clawsouls-mcp@latest" --schema
+```
+
+To persist it, add the `.mcp.json` block below to a file and import it:
+
+```bash
+mcporter config import ./.mcp.json
+```
+
+(See [mcporter.dev](https://mcporter.dev) for full config options.)
+
+## Use with Hermes Agent / Cursor / Windsurf / any MCP client
+
+Same stdio command via an `.mcp.json`-style config:
+
+```json
+{
+  "mcpServers": {
+    "clawsouls": {
+      "command": "npx",
+      "args": ["-y", "clawsouls-mcp@latest"]
+    }
+  }
+}
+```
+
 ## Tools
 
 ### 🎭 Persona Management
@@ -40,7 +72,7 @@ Or add directly to your `.mcp.json`:
 
 | Tool | Description |
 |------|-------------|
-| `soul_scan` | SoulScan — verify persona safety against 53 patterns (A+ to F grade) |
+| `soul_scan` | SoulScan — verify persona safety against 53 patterns (safety grade + recommendations) |
 | `soul_rollback_check` | Detect persona drift by comparing current vs. baseline files |
 
 ### 🧠 Swarm Memory
@@ -121,7 +153,8 @@ memory/
 | Platform | Integration |
 |----------|-------------|
 | **Claude Code** | Plugin + MCP — `/clawsouls:*` commands |
-| **OpenClaw** | Native SOUL.md support — always-on AI partner |
+| **OpenClaw** | MCP tools via [mcporter](https://mcporter.dev) + native SOUL.md support |
+| **Hermes Agent** | MCP server via `.mcp.json` |
 | **Cursor / Windsurf** | MCP server via `.mcp.json` |
 | **Any MCP Client** | `npx -y clawsouls-mcp@latest` |
 
