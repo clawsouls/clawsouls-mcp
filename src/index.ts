@@ -271,7 +271,7 @@ function filesToClaudeMd(files: Record<string, string>, meta: Record<string, unk
 // --- Server setup ---
 const server = new McpServer({
   name: "clawsouls-mcp",
-  version: "0.4.0",
+  version: "0.4.2",
 });
 
 // Tool: soul_search

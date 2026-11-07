@@ -201,7 +201,7 @@ function filesToClaudeMd(files, meta) {
 // --- Server setup ---
 const server = new McpServer({
     name: "clawsouls-mcp",
-    version: "0.4.0",
+    version: "0.4.2",
 });
 // Tool: soul_search
 server.tool("soul_search", "Search AI agent personas on ClawSouls by keyword, category, or tag", {
