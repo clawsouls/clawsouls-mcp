@@ -66,7 +66,7 @@ Same stdio command via an `.mcp.json`-style config:
 |------|-------------|
 | `soul_search` | Search AI agent personas by keyword, category, or tag |
 | `soul_get` | Get detailed info about a specific persona |
-| `soul_install` | Download a persona and generate CLAUDE.md |
+| `soul_install` | Download a persona and merge it into CLAUDE.md (existing content kept) |
 
 ### 🔍 Safety & Integrity
 

@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { mergeMarkerSection } from "./merge.js";
 
 const API_BASE = "https://clawsouls.ai/api/v1";
 
@@ -331,7 +332,7 @@ server.tool(
 // Tool: soul_install
 server.tool(
   "soul_install",
-  "Download a persona from ClawSouls and generate a CLAUDE.md file",
+  "Download a persona from ClawSouls and merge it into CLAUDE.md (existing content is kept; a previous ClawSouls persona block is replaced)",
   {
     owner: z.string().describe("Soul owner"),
     name: z.string().describe("Soul name"),
@@ -347,22 +348,24 @@ server.tool(
     const claudeMd = filesToClaudeMd(bundle.files, bundle.manifest);
     const m = bundle.manifest;
     let writtenPath: string | null = null;
+    let action: "created" | "replaced" | "appended" | null = null;
     try {
-      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
       const { resolve } = await import("path");
-      const dir = output_dir || ".";
-      const resolvedDir = resolve(dir);
-      if (!existsSync(resolvedDir)) mkdirSync(resolvedDir, { recursive: true });
-      writtenPath = resolve(`${dir}/CLAUDE.md`);
-      writeFileSync(writtenPath, claudeMd, "utf-8");
+      writtenPath = resolve(output_dir || ".", "CLAUDE.md");
+      action = mergeMarkerSection(writtenPath, claudeMd);
     } catch {
       writtenPath = null;
     }
-    if (writtenPath) {
+    if (writtenPath && action) {
+      const how = {
+        created: "CLAUDE.md created",
+        replaced: "previous ClawSouls persona block replaced; the rest of CLAUDE.md is unchanged",
+        appended: "persona block added; existing CLAUDE.md content kept",
+      }[action];
       return {
         content: [{
           type: "text" as const,
-          text: `✅ **${m.displayName}** (${owner}/${name} v${m.version}) installed.\nCLAUDE.md written to: \`${writtenPath}\``,
+          text: `✅ **${m.displayName}** (${owner}/${name} v${m.version}) installed — ${how}.\nFile: \`${writtenPath}\``,
         }],
       };
     }
